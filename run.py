@@ -27,8 +27,8 @@ net = Net()
 criterion = nn.CrossEntropyLoss() # loss function
 optimizer = torch.optim.Adagrad(net.parameters(), lr = 0.5) # optimizer
 
-epochs = 20
-bs = 50
+epochs = 10
+bs = 30
 
 train_id, val_id = train_test_split(list(range(len(dataset))), test_size = 0.2, random_state = 0)
 train_set = Subset(dataset, train_id)
