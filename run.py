@@ -25,11 +25,11 @@ device = torch.device('cpu')
 net = Net()
 # net.to(device)
 criterion = nn.CrossEntropyLoss() # loss function
-# optimizer = torch.optim.Adagrad(net.parameters(), lr = 0.5) # optimizer
-optimizer = torch.optim.Adam(net.parameters(), lr=1e-3)
+optimizer = torch.optim.Adagrad(net.parameters(), lr = 0.01) # optimizer
+# optimizer = torch.optim.Adam(net.parameters(), lr=1e-3)
 
 epochs = 10
-bs = 30
+bs = 10
 
 train_id, val_id = train_test_split(list(range(len(dataset))), test_size = 0.2, random_state = 0)
 train_set = Subset(dataset, train_id)
