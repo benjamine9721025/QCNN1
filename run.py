@@ -25,7 +25,8 @@ device = torch.device('cpu')
 net = Net()
 # net.to(device)
 criterion = nn.CrossEntropyLoss() # loss function
-optimizer = torch.optim.Adagrad(net.parameters(), lr = 0.5) # optimizer
+# optimizer = torch.optim.Adagrad(net.parameters(), lr = 0.5) # optimizer
+optimizer = torch.optim.Adam(net.parameters(), lr=1e-3)
 
 epochs = 10
 bs = 30
