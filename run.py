@@ -24,10 +24,24 @@ device = torch.device('cpu')
 # define model
 net = Net()
 # net.to(device)
-criterion = nn.CrossEntropyLoss() # loss function
+# criterion = nn.CrossEntropyLoss() # loss function
 # optimizer = torch.optim.Adagrad(net.parameters(), lr = 0.01) # optimizer
 # optimizer = torch.optim.Adam(net.parameters(), lr=1e-3)
-optimizer = torch.optim.Adam(net.parameters(), lr=1e-4, weight_decay=1e-4)
+# optimizer = torch.optim.Adam(net.parameters(), lr=1e-4, weight_decay=1e-4)
+
+#############################################
+# ★ 暫時凍結量子卷積 (QConv / QKernel) 的參數
+#############################################
+for p in net.qconv.parameters():
+    p.requires_grad = False
+print("🔒 Quantum convolution parameters are frozen")
+
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(
+    filter(lambda p: p.requires_grad, net.parameters()), 
+    lr=1e-3
+)
+
 
 epochs = 10
 bs = 30
