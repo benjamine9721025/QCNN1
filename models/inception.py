@@ -59,6 +59,24 @@ def _make_qconv_qnode(n_pos_qubits: int):
     return qnode
 
 
+#class QKernel(nn.Module):
+#   """One quantum kernel: produces 3 output channels (X, Y, Z) per patch."""
+#    def __init__(self, n_pos_qubits: int):
+#        super().__init__()
+#        self.qnode = _make_qconv_qnode(n_pos_qubits)
+#        # Initialize U3 angles per qubit: (n_pos_qubits, 3)
+#        self.weights = nn.Parameter(0.01 * torch.randn(n_pos_qubits, 3))
+
+#    def forward(self, patch_batch: torch.Tensor) -> torch.Tensor:
+#        """patch_batch: (B, 2**n_pos_qubits) L2-normalized amplitudes per sample
+#        returns: (B, 3)
+#        """
+#        # Vectorized map over batch using torch.vmap-like loop (explicit loop for clarity)
+#        outs = []
+#        for p in patch_batch:
+#            outs.append(self.qnode(p, self.weights))
+#        return torch.stack(outs, dim=0)  # (B, 3)
+
 class QKernel(nn.Module):
     """One quantum kernel: produces 3 output channels (X, Y, Z) per patch."""
     def __init__(self, n_pos_qubits: int):
@@ -71,11 +89,18 @@ class QKernel(nn.Module):
         """patch_batch: (B, 2**n_pos_qubits) L2-normalized amplitudes per sample
         returns: (B, 3)
         """
-        # Vectorized map over batch using torch.vmap-like loop (explicit loop for clarity)
         outs = []
-        for p in patch_batch:
-            outs.append(self.qnode(p, self.weights))
-        return torch.stack(outs, dim=0)  # (B, 3)
+        for p in patch_batch:                 # p: (16,)
+            q_out = self.qnode(p, self.weights)
+            # q_out 通常是長度 3 的 list/tuple，每個元素是 scalar tensor
+            if isinstance(q_out, (list, tuple)):
+                q_out = torch.stack(q_out)    # 變成 shape: (3,)
+            outs.append(q_out)                # list 裡面都是 tensor(3,)
+
+        return torch.stack(outs, dim=0)       # (B, 3)
+
+
+
 
 
 class QConv2d(nn.Module):
@@ -208,4 +233,5 @@ if __name__ == "__main__":
     dummy = torch.randn(2, 1, 8, 8)
     out = model(dummy)
     print("Output shape:", out.shape)  # (2, 10)
+
 
