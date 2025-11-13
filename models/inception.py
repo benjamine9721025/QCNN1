@@ -218,7 +218,8 @@ class QCCNN(nn.Module):
 
         x = self.qconv(x)                 # (B, 12, 3, 3)
         x = self.act(x)
-        x = x.view(B, -1)                 # (B, 108)
+#       x = x.view(B, -1)                 # (B, 108)
+        x = x.reshape(B, -1) 
         x = self.act(self.fc1(x))         # (B, 32)
         x = self.fc2(x)                   # (B, n_classes)
         return x
@@ -233,5 +234,6 @@ if __name__ == "__main__":
     dummy = torch.randn(2, 1, 8, 8)
     out = model(dummy)
     print("Output shape:", out.shape)  # (2, 10)
+
 
 
