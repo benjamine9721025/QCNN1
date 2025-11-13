@@ -141,7 +141,7 @@ class QCCNN(nn.Module):
     """Hybrid QC-CNN: quantum feature extractor + classical head.
     Output classes is configurable (default 10).
     """
-    def __init__(self, n_classes: int = 10):
+    def __init__(self, n_classes: int = 3):
         super().__init__()
         self.qconv = QConv2d(kernel_size=KERNEL_SIZE, stride=STRIDE, n_kernels=N_KERNELS)
         self.act = nn.LeakyReLU(0.1)
@@ -149,12 +149,47 @@ class QCCNN(nn.Module):
         self.fc1 = nn.Linear(12*3*3, 32)
         self.fc2 = nn.Linear(32, n_classes)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    #def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Accept (B, 1, 8, 8) or (B, 64)
+    #    B = x.shape[0]
+    #    if x.dim() == 2 and x.shape[1] == IMG_H * IMG_W:
+    #        x = x.view(B, 1, IMG_H, IMG_W)
+    #    assert x.shape[1:] == (1, IMG_H, IMG_W), "Expected (B,1,8,8) input"
+
+    #    x = self.qconv(x)                 # (B, 12, 3, 3)
+    #    x = self.act(x)
+    #    x = x.view(B, -1)                 # (B, 108)
+    #    x = self.act(self.fc1(x))         # (B, 32)
+    #    x = self.fc2(x)                   # (B, n_classes)
+    #    return x
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        接受：
+        - (B, 1, 8, 8) 影像張量
+        - (B, 64)      已攤平成 8x8 的向量
+        - (B, N)       N >= 64，例如 mnist_179_1200.csv 這種「多特徵向量」
+                        在這種情況下，我們取前 64 維當作 8x8 灰階影像。
+        """
         B = x.shape[0]
-        if x.dim() == 2 and x.shape[1] == IMG_H * IMG_W:
+
+        if x.dim() == 2:
+            # x: (B, N) → 至少要有 64 維才能 reshape 成 8x8
+            if x.shape[1] < IMG_H * IMG_W:
+                raise ValueError(
+                    f"Expected at least {IMG_H*IMG_W} features to reshape into 8x8, got {x.shape[1]}"
+                )
+            # 只取前 64 維來當 8x8 影像
+            x = x[:, :IMG_H * IMG_W]
             x = x.view(B, 1, IMG_H, IMG_W)
-        assert x.shape[1:] == (1, IMG_H, IMG_W), "Expected (B,1,8,8) input"
+        elif x.dim() == 4 and x.shape[1:] == (1, IMG_H, IMG_W):
+            # 已經是 (B,1,8,8)，不用處理
+            pass
+        else:
+            raise AssertionError(
+                f"Expected input of shape (B,1,{IMG_H},{IMG_W}) or flat (B,>= {IMG_H*IMG_W}) "
+                f"features, got {tuple(x.shape)}"
+            )
 
         x = self.qconv(x)                 # (B, 12, 3, 3)
         x = self.act(x)
@@ -162,7 +197,7 @@ class QCCNN(nn.Module):
         x = self.act(self.fc1(x))         # (B, 32)
         x = self.fc2(x)                   # (B, n_classes)
         return x
-
+    
 
 # -------------------
 # Quick sanity check
@@ -173,3 +208,4 @@ if __name__ == "__main__":
     dummy = torch.randn(2, 1, 8, 8)
     out = model(dummy)
     print("Output shape:", out.shape)  # (2, 10)
+
