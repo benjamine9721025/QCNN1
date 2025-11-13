@@ -195,6 +195,10 @@ class QCCNN(nn.Module):
                 )
             x = x[:, : IMG_H * IMG_W]
             x = x.view(B, 1, IMG_H, IMG_W)
+
+            # ⭐ 新增這行：像素 0~255 → 0~1
+            x = x / 255.0
+            
             return x
 
         if x.dim() == 4 and x.shape[1:] == (1, IMG_H, IMG_W):
@@ -206,33 +210,20 @@ class QCCNN(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: (B, N) 或 (B,1,8,8)
-        returns: logits (B, n_classes)
-        """
         B = x.shape[0]
 
-        # 1) 確保是 (B,1,8,8)
-        x = self._ensure_image(x)
+        x = self._ensure_image(x)           # (B,1,8,8) + /255
 
-        
-        # 2) 量子卷積：當成固定特徵抽取器，不讓梯度回傳
-        with torch.no_grad():
-            x = self.qconv(x)  # (B, 3*N_KERNELS, 3, 3)
-
+        x = self.qconv(x)                   # 這裡允許反向傳遞
         x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # 3) flatten + MLP
         x = self.act(x)
-        x = x.reshape(B, -1)  # (B, 108)
-
-        # dtype 對齊 fc1 權重（避免 Double/Float 衝突）
+        x = x.reshape(B, -1)                # (B,108)
         x = x.to(dtype=self.fc1.weight.dtype)
-
-        x = self.act(self.fc1(x))  # (B, 32)
-        x = self.fc2(x)            # (B, n_classes)
-
+        x = self.act(self.fc1(x))
+        x = self.fc2(x)
         return x
+
 
 
 
