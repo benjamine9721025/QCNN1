@@ -34,7 +34,7 @@ def _make_qconv_qnode(n_pos_qubits: int):
     """
     dev = qml.device("default.qubit", wires=n_pos_qubits)
 
-    @qml.qnode(dev, interface="torch", diff_method="best")
+    @qml.qnode(dev, interface="torch", diff_method="parameter-shift")
     def qnode(patch_amplitudes, weights):
         # patch_amplitudes: shape (2**n_pos_qubits,), L2-normalized
         # weights: shape (n_pos_qubits, 3) for U3 per qubit
@@ -223,6 +223,7 @@ if __name__ == "__main__":
     dummy = torch.randn(2, 1, 8, 8)
     out = model(dummy)
     print("Output shape:", out.shape)  # (2, 10)
+
 
 
 
