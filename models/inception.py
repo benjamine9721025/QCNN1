@@ -215,8 +215,11 @@ class QCCNN(nn.Module):
         # 1) 確保是 (B,1,8,8)
         x = self._ensure_image(x)
 
-        # 2) 量子卷積
-        x = self.qconv(x)  # (B, 3*N_KERNELS, 3, 3)
+        
+        # 2) 量子卷積：當成固定特徵抽取器，不讓梯度回傳
+        with torch.no_grad():
+            x = self.qconv(x)  # (B, 3*N_KERNELS, 3, 3)
+
         x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
 
         # 3) flatten + MLP
@@ -230,6 +233,7 @@ class QCCNN(nn.Module):
         x = self.fc2(x)            # (B, n_classes)
 
         return x
+
 
 
 
