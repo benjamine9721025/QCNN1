@@ -30,7 +30,7 @@ criterion = nn.CrossEntropyLoss() # loss function
 optimizer = torch.optim.Adam(net.parameters(), lr=1e-4, weight_decay=1e-4)
 
 epochs = 10
-bs = 10
+bs = 30
 
 train_id, val_id = train_test_split(list(range(len(dataset))), test_size = 0.2, random_state = 0)
 train_set = Subset(dataset, train_id)
