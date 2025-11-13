@@ -174,20 +174,6 @@ class QCCNN(nn.Module):
         self.fc1 = nn.Linear(12*3*3, 32)
         self.fc2 = nn.Linear(32, n_classes)
 
-    #def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Accept (B, 1, 8, 8) or (B, 64)
-    #    B = x.shape[0]
-    #    if x.dim() == 2 and x.shape[1] == IMG_H * IMG_W:
-    #        x = x.view(B, 1, IMG_H, IMG_W)
-    #    assert x.shape[1:] == (1, IMG_H, IMG_W), "Expected (B,1,8,8) input"
-
-    #    x = self.qconv(x)                 # (B, 12, 3, 3)
-    #    x = self.act(x)
-    #    x = x.view(B, -1)                 # (B, 108)
-    #    x = self.act(self.fc1(x))         # (B, 32)
-    #    x = self.fc2(x)                   # (B, n_classes)
-    #    return x
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         接受：
@@ -218,8 +204,11 @@ class QCCNN(nn.Module):
 
         x = self.qconv(x)                 # (B, 12, 3, 3)
         x = self.act(x)
-#       x = x.view(B, -1)                 # (B, 108)
         x = x.reshape(B, -1) 
+        
+    # ⭐ 關鍵：把 x 轉成 fc1 權重的 dtype（通常是 float32）
+        x = x.to(dtype=self.fc1.weight.dtype)
+        
         x = self.act(self.fc1(x))         # (B, 32)
         x = self.fc2(x)                   # (B, n_classes)
         return x
@@ -234,6 +223,7 @@ if __name__ == "__main__":
     dummy = torch.randn(2, 1, 8, 8)
     out = model(dummy)
     print("Output shape:", out.shape)  # (2, 10)
+
 
 
 
