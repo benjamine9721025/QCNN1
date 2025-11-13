@@ -77,12 +77,34 @@ def _make_qconv_qnode(n_pos_qubits: int):
 #            outs.append(self.qnode(p, self.weights))
 #        return torch.stack(outs, dim=0)  # (B, 3)
 
+#class QKernel(nn.Module):
+#   """One quantum kernel: produces 3 output channels (X, Y, Z) per patch."""
+#    def __init__(self, n_pos_qubits: int):
+#        super().__init__()
+#        self.qnode = _make_qconv_qnode(n_pos_qubits)
+#        # Initialize U3 angles per qubit: (n_pos_qubits, 3)
+#        self.weights = nn.Parameter(0.01 * torch.randn(n_pos_qubits, 3))
+
+#    def forward(self, patch_batch: torch.Tensor) -> torch.Tensor:
+#        """patch_batch: (B, 2**n_pos_qubits) L2-normalized amplitudes per sample
+#        returns: (B, 3)
+#        """
+#        outs = []
+#        for p in patch_batch:                 # p: (16,)
+#            q_out = self.qnode(p, self.weights)
+#            # q_out 通常是長度 3 的 list/tuple，每個元素是 scalar tensor
+#            if isinstance(q_out, (list, tuple)):
+#                q_out = torch.stack(q_out)    # 變成 shape: (3,)
+#            outs.append(q_out)                # list 裡面都是 tensor(3,)
+#
+#        return torch.stack(outs, dim=0)       # (B, 3)
+
+
 class QKernel(nn.Module):
     """One quantum kernel: produces 3 output channels (X, Y, Z) per patch."""
     def __init__(self, n_pos_qubits: int):
         super().__init__()
         self.qnode = _make_qconv_qnode(n_pos_qubits)
-        # Initialize U3 angles per qubit: (n_pos_qubits, 3)
         self.weights = nn.Parameter(0.01 * torch.randn(n_pos_qubits, 3))
 
     def forward(self, patch_batch: torch.Tensor) -> torch.Tensor:
@@ -90,15 +112,20 @@ class QKernel(nn.Module):
         returns: (B, 3)
         """
         outs = []
-        for p in patch_batch:                 # p: (16,)
+        for p in patch_batch:
             q_out = self.qnode(p, self.weights)
-            # q_out 通常是長度 3 的 list/tuple，每個元素是 scalar tensor
+            # qnode 通常回傳 list/tuple[scalar]，先轉成 tensor
             if isinstance(q_out, (list, tuple)):
-                q_out = torch.stack(q_out)    # 變成 shape: (3,)
-            outs.append(q_out)                # list 裡面都是 tensor(3,)
+                q_out = torch.stack([torch.as_tensor(v) for v in q_out])
+            else:
+                q_out = torch.as_tensor(q_out)
 
-        return torch.stack(outs, dim=0)       # (B, 3)
+            # 🔒 關鍵：把 NaN / Inf 清掉
+            q_out = torch.nan_to_num(q_out, nan=0.0, posinf=1.0, neginf=-1.0)
 
+            outs.append(q_out)  # shape (3,)
+
+        return torch.stack(outs, dim=0)  # (B, 3)
 
 
 
@@ -143,6 +170,9 @@ class QConv2d(nn.Module):
         eps = 1e-12
         norms = torch.linalg.vector_norm(patches, dim=-1, keepdims=True) + eps
         amps = patches / norms  # (B, L, 16)
+
+        # 再防一層（理論上不會 NaN，但保險）
+        amps = torch.nan_to_num(amps, nan=0.0, posinf=0.0, neginf=0.0)
 
         # For each kernel, run QNode on all L patches (batched)
         kernel_outputs = []
@@ -203,6 +233,10 @@ class QCCNN(nn.Module):
             )
 
         x = self.qconv(x)                 # (B, 12, 3, 3)
+
+        # 再防一下（理論上前面已清，但加這行很便宜）
+        x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+        
         x = self.act(x)
         x = x.reshape(B, -1) 
         
@@ -223,6 +257,7 @@ if __name__ == "__main__":
     dummy = torch.randn(2, 1, 8, 8)
     out = model(dummy)
     print("Output shape:", out.shape)  # (2, 10)
+
 
 
 
