@@ -19,7 +19,6 @@ N_POS_QUBITS = 4        # 4x4 patch → 16 = 2**4 → 4 qubits
 #   - input: amplitudes (len = 2**n_pos_qubits)
 #   - weights: (n_pos_qubits, 3)
 #   - output: (3,) = <X>, <Y>, <Z> on qubit 
-#   - 輸入一張 8×8 灰階圖（或至少 64 維的特徵），先用量子卷積層抽特徵，再接兩層全連接做分類。
 # ============================================================
 def _make_qconv_qnode(n_pos_qubits: int):
     dev = qml.device("default.qubit", wires=n_pos_qubits)
@@ -161,6 +160,7 @@ class QConv2d(nn.Module):
 #   - 先擷取前 64 維 reshape 成 8x8 灰階
 #   - 經過量子卷積 QConv2d
 #   - flatten → fc1(108→32) → fc2(32→n_classes)
+#   - 輸入一張 8×8 灰階圖（或至少 64 維的特徵），先用量子卷積層抽特徵，再接兩層全連接做分類。
 # ============================================================
 class QCCNN(nn.Module):
     def __init__(self, n_classes: int = 3):
@@ -224,6 +224,7 @@ class QCCNN(nn.Module):
         x = self.act(self.fc1(x))
         x = self.fc2(x)
         return x
+
 
 
 
