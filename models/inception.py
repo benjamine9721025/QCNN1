@@ -169,6 +169,13 @@ class QCCNN(nn.Module):
         之後若用到 10 類，可在外面指定 QCCNN(n_classes=10)。
         """
         super().__init__()
+        self.n_classes = n_classes
+        self.in_dim = in_dim
+        self.img_h = img_h
+        self.img_w = img_w
+        # ⭐ 新增：196 → 64 的線性降維
+        self.feat_proj = nn.Linear(self.in_dim, self.img_h * self.img_w)
+        
         self.qconv = QConv2d(kernel_size=KERNEL_SIZE, stride=STRIDE, n_kernels=N_KERNELS)
         self.act = nn.LeakyReLU(0.1)
 
@@ -179,37 +186,44 @@ class QCCNN(nn.Module):
         self.fc1 = nn.Linear(conv_out_dim, 32)
         self.fc2 = nn.Linear(32, n_classes)
 
-    def _ensure_image(self, x: torch.Tensor) -> torch.Tensor:
+    def _ensure_image(self, x):
         """
-        將輸入轉成 (B,1,8,8)：
-          - 若 x: (B, N) 且 N >= 64 → 取前 64 維 reshape 成 8x8
-          - 若 x: (B,1,8,8) → 直接使用
+        輸入可以是：
+        - (B, 196) 數值特徵 → 線性降維 → 64 → reshape 成 (B,1,8,8)
+        - (B, 64) 已經是 64 維 → 直接 reshape 成 (B,1,8,8)
+        - (B,1,H,W) 原本就是圖片 → 視情況 center-crop 等
         """
         B = x.shape[0]
 
+        # Case 1：CSV 出來的 (B, 196) 特徵
         if x.dim() == 2:
-            # x: (B, N) → 至少要 64 個特徵
-            if x.shape[1] < IMG_H * IMG_W:
+            if x.shape[1] == self.in_dim:
+                # ⭐ 在這裡做 196→64 的降維
+                x = self.feat_proj(x)          # (B, 64)
+
+            elif x.shape[1] == self.img_h * self.img_w:
+                # 已經是 64 維，就直接拿來當 8×8
+                pass
+            else:
                 raise ValueError(
-                    f"Expected at least {IMG_H*IMG_W} features to reshape into 8x8, "
-                    f"got {x.shape[1]}"
+                    f"Unsupported feature dim {x.shape[1]}, "
+                    f"expected {self.in_dim} or {self.img_h*self.img_w}"
                 )
-            x = x[:, : IMG_H * IMG_W]
-            x = x.view(B, 1, IMG_H, IMG_W)
 
-            # ⭐ 新增這行：像素 0~255 → 0~1
+            x = x.view(B, 1, self.img_h, self.img_w)
+            # 看資料範圍，如果原始是 0~255 就除 255
             x = x / 255.0
-            
             return x
 
-        if x.dim() == 4 and x.shape[1:] == (1, IMG_H, IMG_W):
+        # Case 2：原本就是 (B,1,H,W) 的圖片
+        if x.dim() == 4:
+            # 視你原本寫法，可能會做 resize / center crop 成 8×8
+            ...
             return x
 
-        raise AssertionError(
-            f"Expected input of shape (B,1,{IMG_H},{IMG_W}) or flat (B,>= {IMG_H*IMG_W}), "
-            f"got {tuple(x.shape)}"
-        )
+        raise ValueError(f"Unsupported input shape {x.shape}")
 
+    
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B = x.shape[0]
 
@@ -224,6 +238,7 @@ class QCCNN(nn.Module):
         x = self.act(self.fc1(x))
         x = self.fc2(x)
         return x
+
 
 
 
