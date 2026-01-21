@@ -163,16 +163,14 @@ class QConv2d(nn.Module):
 #   - 輸入一張 8×8 灰階圖（或至少 64 維的特徵），先用量子卷積層抽特徵，再接兩層全連接做分類。
 # ============================================================
 class QCCNN(nn.Module):
-   def __init__(self, n_classes=3, in_dim=196, img_h=8, img_w=8):
+   def __init__(self, n_classes=3):
         super().__init__()
 
-        self.n_classes = n_classes
-        self.in_dim = in_dim
-        self.img_h = img_h
-        self.img_w = img_w
+        self.in_dim = 196
+        self.img_h = 8
+        self.img_w = 8
 
-        # ⭐ 196 → 64 的線性降維
-        self.feat_proj = nn.Linear(self.in_dim, self.img_h * self.img_w)
+        self.feat_proj = nn.Linear(196, 64)
 
         
         self.qconv = QConv2d(kernel_size=KERNEL_SIZE, stride=STRIDE, n_kernels=N_KERNELS)
@@ -237,6 +235,7 @@ class QCCNN(nn.Module):
         x = self.act(self.fc1(x))
         x = self.fc2(x)
         return x
+
 
 
 
