@@ -71,7 +71,7 @@ class QKernel(nn.Module):
 
             # qnode 通常回傳 list/tuple[scalar tensor]，先轉成 1D tensor
             if isinstance(q_out, (list, tuple)):
-                q_out = torch.stack([torch.as_tensor(v) for v in q_out])
+                q_out = torch.stack(q_out)
             else:
                 q_out = torch.as_tensor(q_out)
 
@@ -224,6 +224,7 @@ class QCCNN(nn.Module):
         x = self.act(self.fc1(x))
         x = self.fc2(x)
         return x
+
 
 
 
