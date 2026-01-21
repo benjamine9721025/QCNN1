@@ -189,34 +189,54 @@ class QCCNN(nn.Module):
         """
         B = x.shape[0]
 
-        # Case 1：CSV 出來的 (B, 196) 特徵
+       # Case 1：扁平特徵 (B, N)
         if x.dim() == 2:
-            if x.shape[1] == self.in_dim:
-                # ⭐ 在這裡做 196→64 的降維
-                x = self.feat_proj(x)          # (B, 64)
+            feat_dim = x.shape[1]
 
-            elif x.shape[1] == self.img_h * self.img_w:
-                # 已經是 64 維，就直接拿來當 8×8
-                pass
+            if feat_dim == 196:
+                # ⭐ 196 維 → Linear 降維到 64 維
+                x = self.feat_proj(x)   # (B, 64)
+            elif feat_dim >= IMG_H * IMG_W:
+                # 如果不是 196，但至少有 64 維，就直接取前 64 維
+                x = x[:, : IMG_H * IMG_W]  # (B, 64)
             else:
                 raise ValueError(
-                    f"Unsupported feature dim {x.shape[1]}, "
-                    f"expected {self.in_dim} or {self.img_h*self.img_w}"
+                    f"Expected at least {IMG_H*IMG_W} features to reshape into 8x8, "
+                    f"got {feat_dim}"
                 )
 
-            x = x.view(B, 1, self.img_h, self.img_w)
-            # 看資料範圍，如果原始是 0~255 就除 255
+            x = x.view(B, 1, IMG_H, IMG_W)   # (B,1,8,8)
             x = x / 255.0
             return x
 
-        # Case 2：原本就是 (B,1,H,W) 的圖片
-        if x.dim() == 4:
-            # 視你原本寫法，可能會做 resize / center crop 成 8×8
-            ...
+        # Case 2：原本就是圖片 (B,1,8,8)
+        if x.dim() == 4 and x.shape[1] == 1 and x.shape[2] == IMG_H and x.shape[3] == IMG_W:
+            x = x / 255.0
             return x
 
-        raise ValueError(f"Unsupported input shape {x.shape}")
+        # 其他情況都視為錯誤
+        raise AssertionError(
+            f"Expected input of shape (B,1,{IMG_H},{IMG_W}) "
+            f"or flat (B,>= {IMG_H*IMG_W}), got {tuple(x.shape)}"
+        )
 
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B = x.shape[0]
+
+        # 轉成 (B,1,8,8)
+        x = self._ensure_image(x)
+
+        # 量子卷積
+        x = self.qconv(x)
+        x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # flatten + 全連接
+        x = self.act(x)
+        x = x.reshape(B, -1)                 # (B,108)
+        x = x.to(dtype=self.fc1.weight.dtype)
+        x = self.act(self.fc1(x))
+        x = self.fc2(x)
+        return x
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B = x.shape[0]
@@ -232,6 +252,7 @@ class QCCNN(nn.Module):
         x = self.act(self.fc1(x))
         x = self.fc2(x)
         return x
+
 
 
 
