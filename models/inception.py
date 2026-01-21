@@ -7,7 +7,7 @@ import pennylane as qml
 # =============================================================
 IMG_H = 8
 IMG_W = 8
-in_dim=196
+
 
 KERNEL_SIZE = 4
 STRIDE = 2
@@ -167,10 +167,6 @@ class QCCNN(nn.Module):
    def __init__(self, n_classes=3):
         super().__init__()
 
-        self.in_dim = 196
-        self.img_h = 8
-        self.img_w = 8
-
         self.feat_proj = nn.Linear(196, 64)
 
         
@@ -236,6 +232,7 @@ class QCCNN(nn.Module):
         x = self.act(self.fc1(x))
         x = self.fc2(x)
         return x
+
 
 
 
