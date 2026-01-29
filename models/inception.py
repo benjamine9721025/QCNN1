@@ -164,94 +164,68 @@ class QConv2d(nn.Module):
 #   - 輸入一張 8×8 灰階圖（或至少 64 維的特徵），先用量子卷積層抽特徵，再接兩層全連接做分類。
 # ============================================================
 class QCCNN(nn.Module):
-   def __init__(self, n_classes=3):
+    def __init__(self, n_classes=3):
         super().__init__()
 
+        # 196 → 64
         self.feat_proj = nn.Linear(196, 64)
 
-        
-        self.qconv = QConv2d(kernel_size=KERNEL_SIZE, stride=STRIDE, n_kernels=N_KERNELS)
+        self.qconv = QConv2d(
+            kernel_size=KERNEL_SIZE,
+            stride=STRIDE,
+            n_kernels=N_KERNELS
+        )
         self.act = nn.LeakyReLU(0.1)
 
-        # QConv 輸出 shape: (B, 3*N_KERNELS, H_out, W_out)
-        # H_out = W_out = (8 - 4)/2 + 1 = 3
-        conv_out_dim = 3 * N_KERNELS * 3 * 3  # = 12 * 3 * 3 = 108
+        # QConv 輸出: (B, 3*N_KERNELS, 3, 3) = 108
+        conv_out_dim = 3 * N_KERNELS * 3 * 3
 
         self.fc1 = nn.Linear(conv_out_dim, 32)
         self.fc2 = nn.Linear(32, n_classes)
 
     def _ensure_image(self, x):
         """
-        輸入可以是：
-        - (B, 196) 數值特徵 → 線性降維 → 64 → reshape 成 (B,1,8,8)
-        - (B, 64) 已經是 64 維 → 直接 reshape 成 (B,1,8,8)
-        - (B,1,H,W) 原本就是圖片 → 視情況 center-crop 等
+        x:
+        - (B,196) → Linear → (B,64) → reshape (B,1,8,8)
+        - (B,64)  → reshape (B,1,8,8)
+        - (B,1,8,8) → 直接使用
         """
         B = x.shape[0]
 
-       # Case 1：扁平特徵 (B, N)
         if x.dim() == 2:
             feat_dim = x.shape[1]
 
             if feat_dim == 196:
-                # ⭐ 196 維 → Linear 降維到 64 維
-                x = self.feat_proj(x)   # (B, 64)
+                x = self.feat_proj(x)
             elif feat_dim >= IMG_H * IMG_W:
-                # 如果不是 196，但至少有 64 維，就直接取前 64 維
-                x = x[:, : IMG_H * IMG_W]  # (B, 64)
+                x = x[:, : IMG_H * IMG_W]
             else:
                 raise ValueError(
-                    f"Expected at least {IMG_H*IMG_W} features to reshape into 8x8, "
-                    f"got {feat_dim}"
+                    f"Need >= {IMG_H*IMG_W} features, got {feat_dim}"
                 )
 
-            x = x.view(B, 1, IMG_H, IMG_W)   # (B,1,8,8)
-            x = x / 255.0
-            return x
+            x = x.view(B, 1, IMG_H, IMG_W)
+            return x / 255.0
 
-        # Case 2：原本就是圖片 (B,1,8,8)
-        if x.dim() == 4 and x.shape[1] == 1 and x.shape[2] == IMG_H and x.shape[3] == IMG_W:
-            x = x / 255.0
-            return x
+        if x.dim() == 4 and x.shape[1:] == (1, IMG_H, IMG_W):
+            return x / 255.0
 
-        # 其他情況都視為錯誤
-        raise AssertionError(
-            f"Expected input of shape (B,1,{IMG_H},{IMG_W}) "
-            f"or flat (B,>= {IMG_H*IMG_W}), got {tuple(x.shape)}"
-        )
+        raise AssertionError(f"Invalid input shape: {x.shape}")
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x):
         B = x.shape[0]
 
-        # 轉成 (B,1,8,8)
         x = self._ensure_image(x)
-
-        # 量子卷積
         x = self.qconv(x)
         x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # flatten + 全連接
         x = self.act(x)
-        x = x.reshape(B, -1)                 # (B,108)
-        x = x.to(dtype=self.fc1.weight.dtype)
+        x = x.reshape(B, -1)
+        x = x.to(self.fc1.weight.dtype)
+
         x = self.act(self.fc1(x))
-        x = self.fc2(x)
-        return x
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B = x.shape[0]
+        return self.fc2(x)
 
-        x = self._ensure_image(x)           # (B,1,8,8) + /255
-
-        x = self.qconv(x)                   # 這裡允許反向傳遞
-        x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
-
-        x = self.act(x)
-        x = x.reshape(B, -1)                # (B,108)
-        x = x.to(dtype=self.fc1.weight.dtype)
-        x = self.act(self.fc1(x))
-        x = self.fc2(x)
-        return x
 
 
 
