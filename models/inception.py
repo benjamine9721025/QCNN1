@@ -28,7 +28,7 @@ def _make_qconv_qnode(n_pos_qubits: int):
     def circuit(amps, weights):
         # amps: shape (2**n_pos_qubits,)
         # 在外部我們已經做 L2 normalize，這裡 normalize=False
-        qml.AmplitudeEmbedding(amps, wires=range(n_pos_qubits), normalize=False)
+        qml.AmplitudeEmbedding(amps, wires=range(n_pos_qubits), normalize=True )
 
         # 簡單的一層參數化旋轉 + entangling 結構
         for w in range(n_pos_qubits):
@@ -225,6 +225,7 @@ class QCCNN(nn.Module):
 
         x = self.act(self.fc1(x))
         return self.fc2(x)
+
 
 
 
