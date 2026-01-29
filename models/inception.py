@@ -119,57 +119,53 @@ class QConv2d(nn.Module):
         B, C, H, W = x.shape
         assert C == 1, f"QConv2d expects single channel input, got C={C}"
 
-        # 使用 unfold 取得所有 4x4 patches
+        # 取得所有 4x4 patches
         patches = (
-            x.unfold(2, self.kernel_size, self.stride)   # dim=2 → H
-             .unfold(3, self.kernel_size, self.stride)   # dim=3 → W
+            x.unfold(2, self.kernel_size, self.stride)
+             .unfold(3, self.kernel_size, self.stride)
         )  # (B, 1, H_out, W_out, k, k)
 
         B, C, H_out, W_out, k, k2 = patches.shape
         assert k == self.kernel_size and k2 == self.kernel_size
 
         # 攤平成 (B * H_out * W_out, k*k)
-        patches = patches.contiguous().view(B * H_out * W_out, k * k)
+        patches = patches.contiguous().view(B * H_out * W_out, k * k)  # (N, 16)
 
-        # L2 normalize → amplitude vector
-        # 先算 norm（不加 eps）
+        # ---------- 關鍵：處理 0 向量 ----------
+        # 計算每個 patch 的 L2 norm
         norms = torch.linalg.vector_norm(patches, dim=-1, keepdims=True)  # (N, 1)
 
-        # 找出「完全為 0 的 patch」
-        zero_mask = norms < 1e-8  # (N, 1) bool
+        # 找出完全為 0 的 patch
+        zero_mask = norms < 1e-8  # (N,1) bool
 
-        # 為了避免除以 0，將這些 norm 人工設為 1
+        # 避免除以 0：對於 zero patch，先暫時把 norm 設成 1
         safe_norms = torch.where(zero_mask, torch.ones_like(norms), norms)
 
         # 正規化
         amps = patches / safe_norms  # (N, k*k)
 
-        # 對於原本是全 0 的 patch，我們手動指定成 |1000...0> 這個 basis state
+        # 對於原本完全為 0 的 patch，手動指定為 |1000...0>（合法且 norm=1）
         if zero_mask.any():
-            # zero_mask: (N,1) → (N,) 方便 index
-            zero_idx = zero_mask.squeeze(-1)
+            zero_idx = zero_mask.squeeze(-1)  # (N,)
             amps[zero_idx] = 0.0
-            amps[zero_idx, 0] = 1.0  # 第一個位置設為 1 → norm=1
+            amps[zero_idx, 0] = 1.0
 
-        # 最後再做一次 NaN 防護
+        # 最後做一次 NaN 防護
         amps = torch.nan_to_num(amps, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # 通過每個量子 kernel
+        # ---------- 送進每個量子 kernel ----------
         kernel_outputs = []
         for qk in self.qkernels:
-            out_bl = qk(amps)  # (B*H_out*W_out, 3)
+            out_bl = qk(amps)  # (N, 3)
             out = out_bl.view(B, H_out, W_out, 3)  # (B, H_out, W_out, 3)
             kernel_outputs.append(out)
 
-        # 在最後一個維度串接 kernels 的輸出 → (B, H_out, W_out, 3 * n_kernels)
-        feats = torch.cat(kernel_outputs, dim=-1)
-
-        # 變換維度為 (B, 3*n_kernels, H_out, W_out)
-        feats = feats.permute(0, 3, 1, 2).contiguous()
-
-        # 再做一次 NaN 防護
+        feats = torch.cat(kernel_outputs, dim=-1)   # (B, H_out, W_out, 3*n_kernels)
+        feats = feats.permute(0, 3, 1, 2).contiguous()  # (B, 3*n_kernels, H_out, W_out)
         feats = torch.nan_to_num(feats, nan=0.0, posinf=0.0, neginf=0.0)
         return feats
+
+
 
 
 # ============================================================
@@ -242,6 +238,7 @@ class QCCNN(nn.Module):
 
         x = self.act(self.fc1(x))
         return self.fc2(x)
+
 
 
 
