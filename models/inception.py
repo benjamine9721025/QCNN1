@@ -132,9 +132,26 @@ class QConv2d(nn.Module):
         patches = patches.contiguous().view(B * H_out * W_out, k * k)
 
         # L2 normalize → amplitude vector
-        eps = 1e-12
-        norms = torch.linalg.vector_norm(patches, dim=-1, keepdims=True) + eps
-        amps = patches / norms  # (B * H_out * W_out, k*k)
+        # 先算 norm（不加 eps）
+        norms = torch.linalg.vector_norm(patches, dim=-1, keepdims=True)  # (N, 1)
+
+        # 找出「完全為 0 的 patch」
+        zero_mask = norms < 1e-8  # (N, 1) bool
+
+        # 為了避免除以 0，將這些 norm 人工設為 1
+        safe_norms = torch.where(zero_mask, torch.ones_like(norms), norms)
+
+        # 正規化
+        amps = patches / safe_norms  # (N, k*k)
+
+        # 對於原本是全 0 的 patch，我們手動指定成 |1000...0> 這個 basis state
+        if zero_mask.any():
+            # zero_mask: (N,1) → (N,) 方便 index
+            zero_idx = zero_mask.squeeze(-1)
+            amps[zero_idx] = 0.0
+            amps[zero_idx, 0] = 1.0  # 第一個位置設為 1 → norm=1
+
+        # 最後再做一次 NaN 防護
         amps = torch.nan_to_num(amps, nan=0.0, posinf=0.0, neginf=0.0)
 
         # 通過每個量子 kernel
@@ -225,6 +242,7 @@ class QCCNN(nn.Module):
 
         x = self.act(self.fc1(x))
         return self.fc2(x)
+
 
 
 
