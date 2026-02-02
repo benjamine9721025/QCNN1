@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import pennylane as qml
+from pennylane import numpy as pnp
+
 
 # =============================================================
 # 全域超參數
@@ -26,15 +28,35 @@ def _make_qconv_qnode(n_pos_qubits: int):
 
     @qml.qnode(dev, interface="torch", diff_method="parameter-shift")
     def circuit(amps, weights):
-        # amps: shape (2**n_pos_qubits,)
-        # 在外部我們已經做 L2 normalize，這裡 normalize=False
-        qml.AmplitudeEmbedding(amps, wires=range(n_pos_qubits), normalize=True )
+        """
+        amps: 來自 PyTorch 的一維張量，長度 = 2**n_pos_qubits
+        在這裡做「最後一關」的清洗與正規化，避免 NaN / 0-norm
+        """
+        # 轉成 PennyLane 的 numpy 陣列（視為純 data，不需要對 amps 求梯度）
+        a = pnp.array(amps, dtype=float)
+
+        # 1) 先把 NaN / Inf 統一成 0
+        a = pnp.nan_to_num(a, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # 2) 計算平方範數
+        sqnorm = pnp.sum(pnp.abs(a) ** 2)
+        norm = pnp.sqrt(sqnorm)
+
+        # 3) 如果 norm 太小或是 NaN，就手動改成 |1000...0> 基底態
+        if not pnp.isfinite(norm) or norm < 1e-8:
+            a = pnp.zeros_like(a)
+            a[0] = 1.0   # → norm = 1
+        else:
+            # 否則就正常正規化
+            a = a / norm
+
+        # 4) 這裡我們就不用再讓 AmplitudeEmbedding normalize 了
+        qml.AmplitudeEmbedding(a, wires=range(n_pos_qubits), normalize=False)
 
         # 簡單的一層參數化旋轉 + entangling 結構
         for w in range(n_pos_qubits):
             qml.Rot(weights[w, 0], weights[w, 1], weights[w, 2], wires=w)
 
-        # 這裡可以加一些 entangling，如果想要更複雜：
         for w in range(n_pos_qubits - 1):
             qml.CNOT(wires=[w, w + 1])
         qml.CNOT(wires=[n_pos_qubits - 1, 0])
@@ -269,6 +291,7 @@ class QCCNN(nn.Module):
 
         x = self.act(self.fc1(x))
         return self.fc2(x)
+
 
 
 
