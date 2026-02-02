@@ -66,22 +66,36 @@ class QKernel(nn.Module):
         patch_batch: (B, 2**n_pos_qubits) L2-normalized amplitudes per sample
         returns: (B, 3)
         """
+        # 先保險一次：把 NaN / Inf 打掉
+        patch_batch = torch.nan_to_num(patch_batch, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # 再次保證每一個向量的 norm=1
+        norms = torch.linalg.vector_norm(patch_batch, dim=-1, keepdims=True)  # (B,1)
+        bad_mask = (norms < 1e-8) | torch.isnan(norms)
+
+        safe_norms = torch.where(bad_mask, torch.ones_like(norms), norms)
+        patch_batch = patch_batch / safe_norms
+
+        if bad_mask.any():
+            bad_idx = bad_mask.squeeze(-1)
+            patch_batch[bad_idx] = 0.0
+            patch_batch[bad_idx, 0] = 1.0
+
         outs = []
         for p in patch_batch:  # p: (2**n_pos_qubits,)
             q_out = self.qnode(p, self.weights)
 
-            # qnode 通常回傳 list/tuple[scalar tensor]，先轉成 1D tensor
             if isinstance(q_out, (list, tuple)):
                 q_out = torch.stack(q_out)
             else:
                 q_out = torch.as_tensor(q_out)
 
-            # 🔒 NaN/Inf 防護
             q_out = torch.nan_to_num(q_out, nan=0.0, posinf=1.0, neginf=-1.0)
+            outs.append(q_out)
 
-            outs.append(q_out)  # (3,)
+        return torch.stack(outs, dim=0)
 
-        return torch.stack(outs, dim=0)  # (B, 3)
+
 
 
 # ============================================================
@@ -131,7 +145,7 @@ class QConv2d(nn.Module):
         # 攤平成 (B * H_out * W_out, k*k)
         patches = patches.contiguous().view(B * H_out * W_out, k * k)  # (N, 16)
 
-        # ---------- 關鍵：處理 0 向量 ----------
+        # ---------- 第一次：處理 0 patch ----------
         # 計算每個 patch 的 L2 norm
         norms = torch.linalg.vector_norm(patches, dim=-1, keepdims=True)  # (N, 1)
 
@@ -144,12 +158,29 @@ class QConv2d(nn.Module):
         # 正規化
         amps = patches / safe_norms  # (N, k*k)
 
-        # 對於原本完全為 0 的 patch，手動指定為 |1000...0>（合法且 norm=1）
+        # 把完全為 0 的 patch，手動指定為 |1000...0>（合法且 norm=1）
         if zero_mask.any():
             zero_idx = zero_mask.squeeze(-1)  # (N,)
             amps[zero_idx] = 0.0
             amps[zero_idx, 0] = 1.0
 
+        # ---------- 第二次：清掉 NaN / Inf ----------
+        amps = torch.nan_to_num(amps, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # 再保險一次：重新 normalize，處理前面 nan_to_num 可能造成的微小偏差
+        norms2 = torch.linalg.vector_norm(amps, dim=-1, keepdims=True)  # (N,1)
+        bad_mask = (norms2 < 1e-8) | torch.isnan(norms2)
+
+        safe_norms2 = torch.where(bad_mask, torch.ones_like(norms2), norms2)
+        amps = amps / safe_norms2
+
+        if bad_mask.any():
+            bad_idx = bad_mask.squeeze(-1)
+            amps[bad_idx] = 0.0
+            amps[bad_idx, 0] = 1.0
+
+
+        
         # 最後做一次 NaN 防護
         amps = torch.nan_to_num(amps, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -238,6 +269,7 @@ class QCCNN(nn.Module):
 
         x = self.act(self.fc1(x))
         return self.fc2(x)
+
 
 
 
