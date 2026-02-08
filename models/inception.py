@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import pennylane as qml
-from pennylane import numpy as pnp
+
 
 
 # =============================================================
@@ -27,18 +27,19 @@ def _make_qconv_qnode(n_pos_qubits: int):
     """建立一個使用『角度編碼』的量子卷積核 qnode。
 
     features: shape = (n_pos_qubits,)，每一個值對應到一個 qubit 的旋轉角度。
-    weights:  量子卷積核的參數 (n_pos_qubits, 3)
+    weights:  torch.Parameter, shape = (n_pos_qubits, 3)
     """
     dev = qml.device("default.qubit", wires=n_pos_qubits)
 
     @qml.qnode(dev, interface="torch", diff_method="parameter-shift")
     def circuit(features, weights):
-        # 將 features 轉成純數值陣列，並清掉 NaN / Inf
-        f = pnp.array(features, dtype=float)
-        f = pnp.nan_to_num(f, nan=0.0, posinf=0.0, neginf=0.0)
+        # features 在這裡是 torch.Tensor（因為 interface="torch"）
+        # 用 qml.math 來清 NaN / Inf，而不是轉成 numpy
+        f = qml.math.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
 
         # 簡單的角度編碼：每個 qubit 做一次 RY(f[w])
         for w in range(n_pos_qubits):
+            # qml.math 會自動處理 torch/jax/numpy 的型別
             angle = f[w] if w < len(f) else 0.0
             qml.RY(angle, wires=w)
 
@@ -59,6 +60,7 @@ def _make_qconv_qnode(n_pos_qubits: int):
         )
 
     return circuit
+
 
 
 # ============================================================
@@ -237,6 +239,7 @@ class QCCNN(nn.Module):
 
         x = self.act(self.fc1(x))
         return self.fc2(x)
+
 
 
 
