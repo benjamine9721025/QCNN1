@@ -23,34 +23,41 @@ N_POS_QUBITS = 4        # 4x4 patch → 16 = 2**4 → 4 qubits
 #   - weights: (n_pos_qubits, 3)
 #   - output: (3,) = <X>, <Y>, <Z> on qubit 
 # ============================================================
-def _make_qconv_qnode(n_pos_qubits: int):
-    """建立一個使用『角度編碼』的量子卷積核 qnode。
+import pennylane as qml
+import numpy as np
 
-    features: shape = (n_pos_qubits,)，每一個值對應到一個 qubit 的旋轉角度。
-    weights:  torch.Parameter, shape = (n_pos_qubits, 3)
-    """
+def _make_qconv_qnode(n_pos_qubits: int):
+    """建立一個『角度編碼』的量子卷積核 qnode（不走 torch interface）"""
+
     dev = qml.device("default.qubit", wires=n_pos_qubits)
 
-    @qml.qnode(dev, interface="torch", diff_method="parameter-shift")
+    # ❗ 不要再寫 interface="torch"
+    @qml.qnode(dev)
     def circuit(features, weights):
-        # ✅ 這裡不要做任何 numpy / qml.math 的轉換
-        # features 是 torch.Tensor，PennyLane 會自己處理與 PyTorch 的介面
+        """
+        features: numpy array, shape = (n_pos_qubits,)
+        weights:  numpy array, shape = (n_pos_qubits, 3)
+        """
 
-        # 角度編碼：每個 qubit 做一次 RY(features[w])
-        for w in range(n_pos_qubits):
-            angle = features[w] if w < len(features) else 0.0
-            qml.RY(angle, wires=w)
+        # 確保是 numpy，且沒有 NaN / Inf
+        f = np.nan_to_num(np.asarray(features, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+        w = np.nan_to_num(np.asarray(weights,  dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+
+        # 角度編碼：每個 qubit 一個 RY(f[w])
+        for i in range(n_pos_qubits):
+            angle = f[i] if i < len(f) else 0.0
+            qml.RY(angle, wires=i)
 
         # 參數化旋轉層
-        for w in range(n_pos_qubits):
-            qml.Rot(weights[w, 0], weights[w, 1], weights[w, 2], wires=w)
+        for i in range(n_pos_qubits):
+            qml.Rot(w[i, 0], w[i, 1], w[i, 2], wires=i)
 
         # entangling
-        for w in range(n_pos_qubits - 1):
-            qml.CNOT(wires=[w, w + 1])
+        for i in range(n_pos_qubits - 1):
+            qml.CNOT(wires=[i, i + 1])
         qml.CNOT(wires=[n_pos_qubits - 1, 0])
 
-        # 量測 qubit 0 的 X/Y/Z 期望值
+        # 測量 qubit 0 的 X/Y/Z 期望值
         return (
             qml.expval(qml.PauliX(0)),
             qml.expval(qml.PauliY(0)),
@@ -65,40 +72,45 @@ def _make_qconv_qnode(n_pos_qubits: int):
 # 單一量子 kernel：對一個 patch 產生 3 維輸出
 # ============================================================
 class QKernel(nn.Module):
-    """一個量子卷積核：輸入一個 4 維 feature 向量，輸出 3 維 (X, Y, Z) expectation。"""
+    """一個量子卷積核：輸入 4 維 feature，輸出 3 維 (X,Y,Z)"""
 
     def __init__(self, n_pos_qubits: int = N_POS_QUBITS):
         super().__init__()
         self.n_pos_qubits = n_pos_qubits
         self.qnode = _make_qconv_qnode(n_pos_qubits)
 
-        # 每一個 qubit 有 3 個參數 (α, β, γ)
+        # 🔸 注意：這裡依然是 torch.nn.Parameter
+        # 但是我們在 forward 時會 .detach()，所以不會對它做反傳
         self.weights = nn.Parameter(
             0.01 * torch.randn(self.n_pos_qubits, 3, dtype=torch.float32)
         )
 
     def forward(self, feature_batch: torch.Tensor) -> torch.Tensor:
         """
-        feature_batch: (B, n_pos_qubits)，每一個 row 是 4 維角度 feature。
-        return: (B, 3)
+        feature_batch: (B, n_pos_qubits) 的 torch.Tensor
+        return:       (B, 3) 的 torch.Tensor
         """
-        # 先清掉 NaN / Inf，避免角度出問題
+
+        # 先清掉 NaN / Inf
         feature_batch = torch.nan_to_num(feature_batch, nan=0.0, posinf=0.0, neginf=0.0)
 
+        # 👉 關鍵：量子電路用的是「純 numpy」資料，不走 autograd
+        fb_np = feature_batch.detach().cpu().numpy()
+        w_np  = self.weights.detach().cpu().numpy()
+
         outs = []
-        for f in feature_batch:  # f: (n_pos_qubits,)
-            q_out = self.qnode(f, self.weights)
+        for f in fb_np:  # f: (n_pos_qubits,)
+            q_out = self.qnode(f, w_np)  # qnode 回傳的是 numpy array / tuple
 
-            if isinstance(q_out, (list, tuple)):
-                q_out = torch.stack(q_out)
-            else:
-                q_out = torch.as_tensor(q_out)
-
-            # 保護一下輸出
-            q_out = torch.nan_to_num(q_out, nan=0.0, posinf=1.0, neginf=-1.0)
+            # 轉回 torch.Tensor，但不需要 gradient
+            q_out = torch.tensor(q_out, dtype=torch.float32)
             outs.append(q_out)
 
-        return torch.stack(outs, dim=0)  # (B, 3)
+        # 最後把所有 sample 堆成 (B, 3)
+        return torch.stack(outs, dim=0)
+
+
+
 
 
 
@@ -237,6 +249,7 @@ class QCCNN(nn.Module):
 
         x = self.act(self.fc1(x))
         return self.fc2(x)
+
 
 
 
