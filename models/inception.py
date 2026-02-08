@@ -33,17 +33,15 @@ def _make_qconv_qnode(n_pos_qubits: int):
 
     @qml.qnode(dev, interface="torch", diff_method="parameter-shift")
     def circuit(features, weights):
-        # features 在這裡是 torch.Tensor（因為 interface="torch"）
-        # 用 qml.math 來清 NaN / Inf，而不是轉成 numpy
-        f = qml.math.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
+        # ✅ 這裡不要做任何 numpy / qml.math 的轉換
+        # features 是 torch.Tensor，PennyLane 會自己處理與 PyTorch 的介面
 
-        # 簡單的角度編碼：每個 qubit 做一次 RY(f[w])
+        # 角度編碼：每個 qubit 做一次 RY(features[w])
         for w in range(n_pos_qubits):
-            # qml.math 會自動處理 torch/jax/numpy 的型別
-            angle = f[w] if w < len(f) else 0.0
+            angle = features[w] if w < len(features) else 0.0
             qml.RY(angle, wires=w)
 
-        # 參數化旋轉層（跟原本的 weights 同樣架構）
+        # 參數化旋轉層
         for w in range(n_pos_qubits):
             qml.Rot(weights[w, 0], weights[w, 1], weights[w, 2], wires=w)
 
@@ -52,7 +50,7 @@ def _make_qconv_qnode(n_pos_qubits: int):
             qml.CNOT(wires=[w, w + 1])
         qml.CNOT(wires=[n_pos_qubits - 1, 0])
 
-        # 只量測 qubit 0 的 X/Y/Z 期望值
+        # 量測 qubit 0 的 X/Y/Z 期望值
         return (
             qml.expval(qml.PauliX(0)),
             qml.expval(qml.PauliY(0)),
@@ -239,6 +237,7 @@ class QCCNN(nn.Module):
 
         x = self.act(self.fc1(x))
         return self.fc2(x)
+
 
 
 
