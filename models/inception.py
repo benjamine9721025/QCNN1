@@ -24,39 +24,29 @@ N_POS_QUBITS = 4        # 4x4 patch → 16 = 2**4 → 4 qubits
 #   - output: (3,) = <X>, <Y>, <Z> on qubit 
 # ============================================================
 def _make_qconv_qnode(n_pos_qubits: int):
+    """建立一個使用『角度編碼』的量子卷積核 qnode。
+
+    features: shape = (n_pos_qubits,)，每一個值對應到一個 qubit 的旋轉角度。
+    weights:  量子卷積核的參數 (n_pos_qubits, 3)
+    """
     dev = qml.device("default.qubit", wires=n_pos_qubits)
 
     @qml.qnode(dev, interface="torch", diff_method="parameter-shift")
-    def circuit(amps, weights):
-        """
-        amps: 來自 PyTorch 的一維張量，長度 = 2**n_pos_qubits
-        在這裡做「最後一關」的清洗與正規化，避免 NaN / 0-norm
-        """
-        # 轉成 PennyLane 的 numpy 陣列（視為純 data，不需要對 amps 求梯度）
-        a = pnp.array(amps, dtype=float)
+    def circuit(features, weights):
+        # 將 features 轉成純數值陣列，並清掉 NaN / Inf
+        f = pnp.array(features, dtype=float)
+        f = pnp.nan_to_num(f, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # 1) 先把 NaN / Inf 統一成 0
-        a = pnp.nan_to_num(a, nan=0.0, posinf=0.0, neginf=0.0)
+        # 簡單的角度編碼：每個 qubit 做一次 RY(f[w])
+        for w in range(n_pos_qubits):
+            angle = f[w] if w < len(f) else 0.0
+            qml.RY(angle, wires=w)
 
-        # 2) 計算平方範數
-        sqnorm = pnp.sum(pnp.abs(a) ** 2)
-        norm = pnp.sqrt(sqnorm)
-
-        # 3) 如果 norm 太小或是 NaN，就手動改成 |1000...0> 基底態
-        if not pnp.isfinite(norm) or norm < 1e-8:
-            a = pnp.zeros_like(a)
-            a[0] = 1.0   # → norm = 1
-        else:
-            # 否則就正常正規化
-            a = a / norm
-
-        # 4) 這裡我們就不用再讓 AmplitudeEmbedding normalize 了
-        qml.AmplitudeEmbedding(a, wires=range(n_pos_qubits), normalize=False)
-
-        # 簡單的一層參數化旋轉 + entangling 結構
+        # 參數化旋轉層（跟原本的 weights 同樣架構）
         for w in range(n_pos_qubits):
             qml.Rot(weights[w, 0], weights[w, 1], weights[w, 2], wires=w)
 
+        # entangling
         for w in range(n_pos_qubits - 1):
             qml.CNOT(wires=[w, w + 1])
         qml.CNOT(wires=[n_pos_qubits - 1, 0])
@@ -75,48 +65,40 @@ def _make_qconv_qnode(n_pos_qubits: int):
 # 單一量子 kernel：對一個 patch 產生 3 維輸出
 # ============================================================
 class QKernel(nn.Module):
-    """One quantum kernel: produces 3 output channels (X, Y, Z) per patch."""
+    """一個量子卷積核：輸入一個 4 維 feature 向量，輸出 3 維 (X, Y, Z) expectation。"""
 
-    def __init__(self, n_pos_qubits: int):
+    def __init__(self, n_pos_qubits: int = N_POS_QUBITS):
         super().__init__()
+        self.n_pos_qubits = n_pos_qubits
         self.qnode = _make_qconv_qnode(n_pos_qubits)
-        # trainable parameters: (n_pos_qubits, 3)
-        self.weights = nn.Parameter(0.01 * torch.randn(n_pos_qubits, 3))
 
-    def forward(self, patch_batch: torch.Tensor) -> torch.Tensor:
+        # 每一個 qubit 有 3 個參數 (α, β, γ)
+        self.weights = nn.Parameter(
+            0.01 * torch.randn(self.n_pos_qubits, 3, dtype=torch.float32)
+        )
+
+    def forward(self, feature_batch: torch.Tensor) -> torch.Tensor:
         """
-        patch_batch: (B, 2**n_pos_qubits) L2-normalized amplitudes per sample
-        returns: (B, 3)
+        feature_batch: (B, n_pos_qubits)，每一個 row 是 4 維角度 feature。
+        return: (B, 3)
         """
-        # 先保險一次：把 NaN / Inf 打掉
-        patch_batch = torch.nan_to_num(patch_batch, nan=0.0, posinf=0.0, neginf=0.0)
-
-        # 再次保證每一個向量的 norm=1
-        norms = torch.linalg.vector_norm(patch_batch, dim=-1, keepdims=True)  # (B,1)
-        bad_mask = (norms < 1e-8) | torch.isnan(norms)
-
-        safe_norms = torch.where(bad_mask, torch.ones_like(norms), norms)
-        patch_batch = patch_batch / safe_norms
-
-        if bad_mask.any():
-            bad_idx = bad_mask.squeeze(-1)
-            patch_batch[bad_idx] = 0.0
-            patch_batch[bad_idx, 0] = 1.0
+        # 先清掉 NaN / Inf，避免角度出問題
+        feature_batch = torch.nan_to_num(feature_batch, nan=0.0, posinf=0.0, neginf=0.0)
 
         outs = []
-        for p in patch_batch:  # p: (2**n_pos_qubits,)
-            q_out = self.qnode(p, self.weights)
+        for f in feature_batch:  # f: (n_pos_qubits,)
+            q_out = self.qnode(f, self.weights)
 
             if isinstance(q_out, (list, tuple)):
                 q_out = torch.stack(q_out)
             else:
                 q_out = torch.as_tensor(q_out)
 
+            # 保護一下輸出
             q_out = torch.nan_to_num(q_out, nan=0.0, posinf=1.0, neginf=-1.0)
             outs.append(q_out)
 
-        return torch.stack(outs, dim=0)
-
+        return torch.stack(outs, dim=0)  # (B, 3)
 
 
 
@@ -126,11 +108,6 @@ class QKernel(nn.Module):
 class QConv2d(nn.Module):
     """
     輸入: x (B, 1, H, W)
-    流程:
-      - 以 kernel_size/stride 擷取 4x4 patches
-      - 每個 patch flatten 成長度 16 的向量
-      - L2 normalize → 當作 amplitude encoding
-      - 每個量子 kernel QKernel 產出 3 維特徵 (X, Y, Z)
     輸出: (B, 3 * n_kernels, H_out, W_out)
     """
 
@@ -141,7 +118,6 @@ class QConv2d(nn.Module):
         self.n_kernels = n_kernels
         self.n_pos_qubits = n_pos_qubits
 
-        # 建立多個量子 kernel
         self.qkernels = nn.ModuleList(
             [QKernel(n_pos_qubits=self.n_pos_qubits) for _ in range(self.n_kernels)]
         )
@@ -155,70 +131,40 @@ class QConv2d(nn.Module):
         B, C, H, W = x.shape
         assert C == 1, f"QConv2d expects single channel input, got C={C}"
 
-        # 取得所有 4x4 patches
+        # 取得所有 4x4 patches: (B, 1, H_out, W_out, k, k)
         patches = (
             x.unfold(2, self.kernel_size, self.stride)
              .unfold(3, self.kernel_size, self.stride)
-        )  # (B, 1, H_out, W_out, k, k)
+        )
 
         B, C, H_out, W_out, k, k2 = patches.shape
         assert k == self.kernel_size and k2 == self.kernel_size
 
-        # 攤平成 (B * H_out * W_out, k*k)
-        patches = patches.contiguous().view(B * H_out * W_out, k * k)  # (N, 16)
+        # 現在我們不用 amplitude，而是做簡單的「列平均」→ 4 維角度 feature:
+        # 每一個 patch 形狀是 (k, k)，我們取每一列平均 → (k,)
+        # 對於 4x4 patch，就是 4 維向量。
+        patches = patches.view(B, H_out, W_out, k, k)  # 明確 reshape
 
-        # ---------- 第一次：處理 0 patch ----------
-        # 計算每個 patch 的 L2 norm
-        norms = torch.linalg.vector_norm(patches, dim=-1, keepdims=True)  # (N, 1)
+        # (B, H_out, W_out, k, k) → (B * H_out * W_out, k, k)
+        patches_flat = patches.contiguous().view(B * H_out * W_out, k, k)
 
-        # 找出完全為 0 的 patch
-        zero_mask = norms < 1e-8  # (N,1) bool
+        # 對「列」做平均，得到 (N, k) = (N, 4)
+        features = patches_flat.mean(dim=-1)  # 在最後一維 (列) 上平均 → (N, k)
+        # 再做一次保護
+        features = torch.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # 避免除以 0：對於 zero patch，先暫時把 norm 設成 1
-        safe_norms = torch.where(zero_mask, torch.ones_like(norms), norms)
-
-        # 正規化
-        amps = patches / safe_norms  # (N, k*k)
-
-        # 把完全為 0 的 patch，手動指定為 |1000...0>（合法且 norm=1）
-        if zero_mask.any():
-            zero_idx = zero_mask.squeeze(-1)  # (N,)
-            amps[zero_idx] = 0.0
-            amps[zero_idx, 0] = 1.0
-
-        # ---------- 第二次：清掉 NaN / Inf ----------
-        amps = torch.nan_to_num(amps, nan=0.0, posinf=0.0, neginf=0.0)
-
-        # 再保險一次：重新 normalize，處理前面 nan_to_num 可能造成的微小偏差
-        norms2 = torch.linalg.vector_norm(amps, dim=-1, keepdims=True)  # (N,1)
-        bad_mask = (norms2 < 1e-8) | torch.isnan(norms2)
-
-        safe_norms2 = torch.where(bad_mask, torch.ones_like(norms2), norms2)
-        amps = amps / safe_norms2
-
-        if bad_mask.any():
-            bad_idx = bad_mask.squeeze(-1)
-            amps[bad_idx] = 0.0
-            amps[bad_idx, 0] = 1.0
-
-
-        
-        # 最後做一次 NaN 防護
-        amps = torch.nan_to_num(amps, nan=0.0, posinf=0.0, neginf=0.0)
-
-        # ---------- 送進每個量子 kernel ----------
+        # 送進每一個量子 kernel
         kernel_outputs = []
         for qk in self.qkernels:
-            out_bl = qk(amps)  # (N, 3)
+            out_bl = qk(features)  # (N, 3)
             out = out_bl.view(B, H_out, W_out, 3)  # (B, H_out, W_out, 3)
             kernel_outputs.append(out)
 
-        feats = torch.cat(kernel_outputs, dim=-1)   # (B, H_out, W_out, 3*n_kernels)
-        feats = feats.permute(0, 3, 1, 2).contiguous()  # (B, 3*n_kernels, H_out, W_out)
+        # 最後組成 (B, 3 * n_kernels, H_out, W_out)
+        feats = torch.cat(kernel_outputs, dim=-1)            # (B, H_out, W_out, 3*n_kernels)
+        feats = feats.permute(0, 3, 1, 2).contiguous()       # (B, 3*n_kernels, H_out, W_out)
         feats = torch.nan_to_num(feats, nan=0.0, posinf=0.0, neginf=0.0)
         return feats
-
-
 
 
 # ============================================================
@@ -291,6 +237,7 @@ class QCCNN(nn.Module):
 
         x = self.act(self.fc1(x))
         return self.fc2(x)
+
 
 
 
